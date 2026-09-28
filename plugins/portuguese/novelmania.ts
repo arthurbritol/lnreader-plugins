@@ -177,7 +177,7 @@ class NovelMania implements Plugin.PluginBase {
   name    = 'Novel Mania';
   icon    = 'src/pt-br/novelmania/icon.png';
   site    = BASE;
-  version = '2.0.4';
+  version = '2.0.5';
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   async popularNovels(
@@ -265,13 +265,48 @@ class NovelMania implements Plugin.PluginBase {
     // chapterPath is like /novels/avatar-do-rei-ar/capitulos/volume-1-capitulo-1
     // The chapter JSON API returns 403. Content and metadata are extracted from
     // the React SSR $R data stream embedded in the HTML page.
+    const chapterUrl = `${BASE}${chapterPath}`;
     const novelSlugForRef = chapterPath.split('/')[2] ?? '';
-    const html = await fetchApi(`${BASE}${chapterPath}`, {
-      headers: {
-        ...BROWSER_HEADERS,
-        Referer: `${BASE}/novels/${novelSlugForRef}`,
-      },
-    }).then(r => r.text());
+
+    // O HTML vem em streaming e pode chegar truncado no app. Tenta várias
+    // formas de leitura até uma vir completa ($_TSR.e() marca o fim do stream).
+    const variants: { label: string; enc?: string; mode: 'text' | 'buffer' }[] = [
+      { label: 'padrao/texto', mode: 'text' },
+      { label: 'padrao/buffer', mode: 'buffer' },
+      { label: 'identity/texto', enc: 'identity', mode: 'text' },
+      { label: 'identity/buffer', enc: 'identity', mode: 'buffer' },
+      { label: 'gzip/buffer', enc: 'gzip', mode: 'buffer' },
+    ];
+    let html = '';
+    const attemptsLog: string[] = [];
+    for (const v of variants) {
+      try {
+        const headers: Record<string, string> = {
+          ...BROWSER_HEADERS,
+          Referer: `${BASE}/novels/${novelSlugForRef}`,
+        };
+        if (v.enc) headers['Accept-Encoding'] = v.enc;
+        const res = await fetchApi(chapterUrl, { headers });
+        const body =
+          v.mode === 'buffer'
+            ? new TextDecoder('utf-8').decode(await res.arrayBuffer())
+            : await res.text();
+        const done = body.includes('$_TSR.e()');
+        attemptsLog.push(
+          `${v.label}: status ${res.status}, ${body.length} chars, completo=${done}, ` +
+            `enc=${res.headers.get('content-encoding')}, ` +
+            `te=${res.headers.get('transfer-encoding')}, ` +
+            `len=${res.headers.get('content-length')}`,
+        );
+        if (body.length > html.length) html = body;
+        if (done) {
+          html = body;
+          break;
+        }
+      } catch (e) {
+        attemptsLog.push(`${v.label}: erro ${String(e)}`);
+      }
+    }
 
     // --- Extract chapter content ---
     // 1) SSR stream (chave com/sem aspas, com/sem espaços)
@@ -404,6 +439,7 @@ class NovelMania implements Plugin.PluginBase {
         })()}`,
         `ld+json: ${(html.match(/ld\+json[^>]*>([\s\S]{0,300})/) || [])[1] || ''}`,
         `Stream terminou ($_TSR.e): ${html.includes('$_TSR.e()')}`,
+        `Tentativas:\n  ${attemptsLog.join('\n  ')}`,
         `Tem "chapter:$R": ${html.includes('chapter:$R')}`,
         `Início dos matches: ${(() => {
           const i = html.indexOf('matches:');
@@ -416,7 +452,7 @@ class NovelMania implements Plugin.PluginBase {
         })()}`,
       ];
       return (
-        '<h3>Diagnóstico NovelMania (v2.0.4)</h3><pre style="white-space:pre-wrap">' +
+        '<h3>Diagnóstico NovelMania (v2.0.5)</h3><pre style="white-space:pre-wrap">' +
         info.join('\n').replace(/</g, '&lt;') +
         '</pre>'
       );
