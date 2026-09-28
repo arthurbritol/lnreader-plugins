@@ -1,4 +1,5 @@
 import { fetchApi } from '@libs/fetch';
+import { load as parseHTML } from 'cheerio';
 import { Plugin } from '@/types/plugin';
 import { Filters, FilterTypes } from '@libs/filterInputs';
 import { defaultCover } from '@libs/defaultCover';
@@ -101,6 +102,8 @@ function decodeJsString(raw: string): string {
     .replace(/\\n/g,  '\n')
     .replace(/\\r/g,  '\r')
     .replace(/\\t/g,  '\t')
+    .replace(/\\\//g, '/')
+    .replace(/\\'/g, "'")
     .replace(/\\\\/g, '\\');
 }
 
@@ -164,7 +167,7 @@ class NovelMania implements Plugin.PluginBase {
   name    = 'Novel Mania';
   icon    = 'src/pt-br/novelmania/icon.png';
   site    = BASE;
-  version = '2.0.1';
+  version = '2.0.2';
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   async popularNovels(
@@ -255,8 +258,78 @@ class NovelMania implements Plugin.PluginBase {
     const html = await fetchApi(`${BASE}${chapterPath}`).then(r => r.text());
 
     // --- Extract chapter content ---
-    const contentMatch = html.match(/[,{]content:"((?:[^"\\]|\\.)*)"/);
-    const content = contentMatch?.[1] ? decodeJsString(contentMatch[1]) : '';
+    // 1) SSR stream (chave com/sem aspas, com/sem espaços)
+    const contentMatch = html.match(
+      /[,{]"?content"?\s*:\s*"((?:[^"\\]|\\.)*)"/,
+    );
+    let content = contentMatch?.[1] ? decodeJsString(contentMatch[1]) : '';
+
+    // 2) Fallback: API JSON do capítulo (pode dar 403, então é tolerante)
+    if (!content.trim()) {
+      try {
+        const m = chapterPath.match(/\/novels\/([^/]+)\/capitulos\/([^/?#]+)/);
+        if (m) {
+          const res = await fetchApi(
+            `${API}/novels/${m[1]}/chapters/${m[2]}`,
+            { headers: JSON_HEADERS },
+          );
+          if (res.ok) {
+            const j = await res.json();
+            content = j?.data?.content ?? '';
+          }
+        }
+      } catch (e) {
+        /* ignora */
+      }
+    }
+
+    // 3) Fallback: DOM
+    if (!content.trim()) {
+      const $ = parseHTML(html);
+      const selectors = [
+        '#chapter-content', '.chapter-content', '.prose', 'article', 'main',
+      ];
+      for (const sel of selectors) {
+        const el = $(sel).first();
+        if (el.find('p').length > 3) {
+          content = el.html() ?? '';
+          break;
+        }
+      }
+      // 4) Último recurso: elemento com mais <p> filhos diretos
+      if (!content.trim()) {
+        let best = { count: 0, html: '' };
+        $('div, article, section').each((_, node) => {
+          const count = $(node).children('p').length;
+          if (count > best.count) best = { count, html: $(node).html() ?? '' };
+        });
+        if (best.count > 3) content = best.html;
+      }
+    }
+
+    // 5) DIAGNÓSTICO: se ainda estiver vazio, mostra o que o plugin recebeu
+    if (!content.trim()) {
+      const $d = parseHTML(html);
+      const bodyText = $d('body').text().replace(/\s+/g, ' ').trim().slice(0, 300);
+      const info = [
+        `URL: ${BASE}${chapterPath}`,
+        `Tamanho do HTML: ${html.length}`,
+        `<title>: ${$d('title').text().trim()}`,
+        `Cloudflare/desafio: ${/just a moment|cf-chl|challenge-platform|cloudflare/i.test(html)}`,
+        `Contém "content:": ${/content\s*:/.test(html)}`,
+        `Contém "$R[": ${html.includes('$R[')}`,
+        `Contém __NEXT_DATA__: ${html.includes('__NEXT_DATA__')}`,
+        `Contém ld+json: ${html.includes('ld+json')}`,
+        `Nº de <p>: ${$d('p').length}`,
+        `Nº de <script>: ${$d('script').length}`,
+        `Texto do body: ${bodyText}`,
+      ];
+      return (
+        '<h3>Diagnóstico NovelMania (v2.0.2)</h3><pre style="white-space:pre-wrap">' +
+        info.join('\n').replace(/</g, '&lt;') +
+        '</pre>'
+      );
+    }
 
     // --- Extract chapter title from SSR stream ---
     // The chapter object has: ...,updatedAt:"ISO",title:"TITLE",slug:
