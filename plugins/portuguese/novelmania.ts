@@ -13,6 +13,16 @@ const JSON_HEADERS = {
   'Content-Type': 'application/json',
 };
 
+const BROWSER_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0',
+  Accept:
+    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+  Cookie:
+    'nm_vid=3cd53a73-5e1e-47e8-b3ea-188c42043304; PARAGLIDE_LOCALE=pt-BR',
+};
+
 type ApiNovelItem = {
   title: string;
   slug: string;
@@ -167,7 +177,7 @@ class NovelMania implements Plugin.PluginBase {
   name    = 'Novel Mania';
   icon    = 'src/pt-br/novelmania/icon.png';
   site    = BASE;
-  version = '2.0.3';
+  version = '2.0.4';
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   async popularNovels(
@@ -255,7 +265,13 @@ class NovelMania implements Plugin.PluginBase {
     // chapterPath is like /novels/avatar-do-rei-ar/capitulos/volume-1-capitulo-1
     // The chapter JSON API returns 403. Content and metadata are extracted from
     // the React SSR $R data stream embedded in the HTML page.
-    const html = await fetchApi(`${BASE}${chapterPath}`).then(r => r.text());
+    const novelSlugForRef = chapterPath.split('/')[2] ?? '';
+    const html = await fetchApi(`${BASE}${chapterPath}`, {
+      headers: {
+        ...BROWSER_HEADERS,
+        Referer: `${BASE}/novels/${novelSlugForRef}`,
+      },
+    }).then(r => r.text());
 
     // --- Extract chapter content ---
     // 1) SSR stream (chave com/sem aspas, com/sem espaços)
@@ -387,13 +403,20 @@ class NovelMania implements Plugin.PluginBase {
           return out.length ? '\n  ' + out.join('\n  ') : 'nenhum';
         })()}`,
         `ld+json: ${(html.match(/ld\+json[^>]*>([\s\S]{0,300})/) || [])[1] || ''}`,
+        `Stream terminou ($_TSR.e): ${html.includes('$_TSR.e()')}`,
+        `Tem "chapter:$R": ${html.includes('chapter:$R')}`,
+        `Início dos matches: ${(() => {
+          const i = html.indexOf('matches:');
+          return i >= 0 ? html.slice(i, i + 350) : 'sem matches';
+        })()}`,
+        `Final do HTML: ${html.slice(-200)}`,
         `Trecho após "$R[": ${(() => {
           const i = html.indexOf('$R[');
           return i >= 0 ? html.slice(i, i + 250) : '';
         })()}`,
       ];
       return (
-        '<h3>Diagnóstico NovelMania (v2.0.3)</h3><pre style="white-space:pre-wrap">' +
+        '<h3>Diagnóstico NovelMania (v2.0.4)</h3><pre style="white-space:pre-wrap">' +
         info.join('\n').replace(/</g, '&lt;') +
         '</pre>'
       );
