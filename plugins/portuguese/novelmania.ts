@@ -299,8 +299,11 @@ class NovelMania implements Plugin.PluginBase {
         const body = attempt.buffer
           ? new TextDecoder('utf-8').decode(await res.arrayBuffer())
           : await res.text();
+        if (body.includes(STREAM_END)) {
+          html = body;
+          break;
+        }
         if (body.length > html.length) html = body;
-        if (body.includes(STREAM_END)) break;
       } catch {
         // try the next strategy
       }
