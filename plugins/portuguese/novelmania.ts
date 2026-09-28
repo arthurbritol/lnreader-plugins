@@ -167,7 +167,7 @@ class NovelMania implements Plugin.PluginBase {
   name    = 'Novel Mania';
   icon    = 'src/pt-br/novelmania/icon.png';
   site    = BASE;
-  version = '2.0.2';
+  version = '2.0.3';
   imageRequestInit?: Plugin.ImageRequestInit | undefined = undefined;
 
   async popularNovels(
@@ -264,6 +264,36 @@ class NovelMania implements Plugin.PluginBase {
     );
     let content = contentMatch?.[1] ? decodeJsString(contentMatch[1]) : '';
 
+    // 1b) Heurística: o site pode ter renomeado o campo. Procura a maior
+    // string longa do stream SSR que pareça HTML/texto de capítulo.
+    if (!content.trim()) {
+      const reLong = /([A-Za-z_$][\w$]*|"[^"]+")\s*:\s*"((?:[^"\\]|\\.){400,})"/g;
+      let best = '';
+      let bestScore = 0;
+      let mm: RegExpExecArray | null;
+      while ((mm = reLong.exec(html)) !== null) {
+        const dec = decodeJsString(mm[2]);
+        if (/function\s*\(|=>|https?:\/\/[^\s]{60,}/.test(dec.slice(0, 200))) {
+          continue;
+        }
+        const tags = (dec.match(/<p[\s>]/g) || []).length;
+        const score = tags * 1000 + dec.length;
+        if (score > bestScore) {
+          bestScore = score;
+          best = dec;
+        }
+      }
+      if (best) {
+        content = /<p[\s>]|<br/i.test(best)
+          ? best
+          : best
+              .split(/\n+/)
+              .filter(l => l.trim())
+              .map(l => '<p>' + l + '</p>')
+              .join('');
+      }
+    }
+
     // 2) Fallback: API JSON do capítulo (pode dar 403, então é tolerante)
     if (!content.trim()) {
       try {
@@ -307,6 +337,31 @@ class NovelMania implements Plugin.PluginBase {
       }
     }
 
+    // 4b) Fallback: JSON-LD (articleBody / text)
+    if (!content.trim()) {
+      try {
+        const $j = parseHTML(html);
+        $j('script[type="application/ld+json"]').each((_, el) => {
+          if (content.trim()) return;
+          const data = JSON.parse($j(el).contents().text());
+          const items = Array.isArray(data) ? data : [data];
+          for (const it of items) {
+            const body = it?.articleBody || it?.text;
+            if (typeof body === 'string' && body.length > 200) {
+              content = body
+                .split(/\n+/)
+                .filter((l: string) => l.trim())
+                .map((l: string) => '<p>' + l + '</p>')
+                .join('');
+              break;
+            }
+          }
+        });
+      } catch (e) {
+        /* ignora */
+      }
+    }
+
     // 5) DIAGNÓSTICO: se ainda estiver vazio, mostra o que o plugin recebeu
     if (!content.trim()) {
       const $d = parseHTML(html);
@@ -322,10 +377,23 @@ class NovelMania implements Plugin.PluginBase {
         `Contém ld+json: ${html.includes('ld+json')}`,
         `Nº de <p>: ${$d('p').length}`,
         `Nº de <script>: ${$d('script').length}`,
-        `Texto do body: ${bodyText}`,
+        `Campos grandes no stream: ${(() => {
+          const out: string[] = [];
+          const re = /([A-Za-z_$][\w$]*|"[^"]+")\s*:\s*"((?:[^"\\]|\\.){200,})"/g;
+          let q: RegExpExecArray | null;
+          while ((q = re.exec(html)) !== null && out.length < 8) {
+            out.push(`${q[1]} (${q[2].length}) "${q[2].slice(0, 60)}"`);
+          }
+          return out.length ? '\n  ' + out.join('\n  ') : 'nenhum';
+        })()}`,
+        `ld+json: ${(html.match(/ld\+json[^>]*>([\s\S]{0,300})/) || [])[1] || ''}`,
+        `Trecho após "$R[": ${(() => {
+          const i = html.indexOf('$R[');
+          return i >= 0 ? html.slice(i, i + 250) : '';
+        })()}`,
       ];
       return (
-        '<h3>Diagnóstico NovelMania (v2.0.2)</h3><pre style="white-space:pre-wrap">' +
+        '<h3>Diagnóstico NovelMania (v2.0.3)</h3><pre style="white-space:pre-wrap">' +
         info.join('\n').replace(/</g, '&lt;') +
         '</pre>'
       );
